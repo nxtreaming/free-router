@@ -1,13 +1,13 @@
 [English](./README.md) | [한국어](./README.ko.md)
 
-![Version](https://img.shields.io/badge/version-1.2.0-333333?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.2.1-333333?style=flat-square)
 [![License: MIT License](https://img.shields.io/badge/License-MIT%20License-yellow.svg)](./LICENSE)
 [![npm downloads](https://img.shields.io/npm/dm/%40bytonylee%2Ffree-router)](https://www.npmjs.com/package/@bytonylee/free-router)
 [![CI](https://github.com/bytonylee/free-router/actions/workflows/ci.yml/badge.svg)](https://github.com/bytonylee/free-router/actions/workflows/ci.yml)
 
 Free model router CLI - discover, ping, and configure free AI models for OpenCode / OpenClaw.
 
-![free-router-gif](./public/example.gif)
+![free-router terminal demo](./public/demo.gif)
 
 ## Install
 
@@ -68,6 +68,7 @@ FREE_ROUTER_METRICS_CACHE=0 free-router
 ## TUI
 
 The interactive TUI pings all models in parallel every 2 seconds and shows live latency, uptime, and verdict.
+The selected row uses a stable marker, and redraws are deferred while the terminal is unfocused to avoid background-tab blinking.
 
 ### Columns
 
@@ -91,6 +92,10 @@ Search bar provider badges:
 - `Name:✓` key exists and looks healthy
 - `Name:✗` provider appears expired/no-auth
 - `Name:○` key missing
+
+The `?` help overlay and `A` API-key editor use the same terminal header/footer
+chrome as the main list. Their mode tags stay left-aligned, and help body text
+uses the same foreground color as the table rows.
 
 ### Keyboard shortcuts
 
