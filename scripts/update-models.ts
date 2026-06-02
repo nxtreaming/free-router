@@ -50,20 +50,38 @@ type CatalogModel = {
 };
 
 type AAMeta = {
+  aa_model_id: string;
   swe_bench: string | null;
   aa_slug: string;
+  aa_benchmark_score: number | null;
+  aa_benchmark_name: "coding_index" | "intelligence_index" | null;
+  aa_coding_index: number | null;
   aa_intelligence: number | null;
   aa_speed_tps: number | null;
   aa_price_input: number | null;
   aa_price_output: number | null;
   aa_context: string;
   aa_url: string;
+  aa_updated_at: string;
   tier: string | null;
 };
 
 type Report = {
   generated_at: string;
   apply: boolean;
+  added_models: string[];
+  removed_models: string[];
+  updated_benchmarks: Array<{
+    model_id: string;
+    before: number | null;
+    after: number | null;
+    benchmark: string | null;
+  }>;
+  unmatched_provider_models: string[];
+  unmatched_artificial_analysis_models: string[];
+  opencode_supported: string[];
+  opencode_unknown: string[];
+  opencode_unsupported: string[];
   providers: {
     nim: {
       fetched: boolean;
@@ -97,6 +115,11 @@ type Report = {
     unresolved_tier_models: string[];
     changed: boolean;
   };
+};
+
+const AA_MODEL_ALIASES: Record<string, string[]> = {
+  // Keep manually verified aliases here when provider IDs and AA IDs differ
+  // beyond normalization. Values are checked before slug/name fallbacks.
 };
 
 // ─── CLI args ────────────────────────────────────────────────────────────────
@@ -240,6 +263,17 @@ function formatContext(context: number | null | undefined): string {
   return String(context);
 }
 
+function uniqueCatalogModels(models: CatalogModel[]): CatalogModel[] {
+  const seen = new Set<string>();
+  const out: CatalogModel[] = [];
+  for (const model of models) {
+    if (seen.has(model.id)) continue;
+    seen.add(model.id);
+    out.push(model);
+  }
+  return out;
+}
+
 // ─── Tier helpers ────────────────────────────────────────────────────────────
 
 function scoreTierFromSwe(swe: number | null): string {
@@ -296,6 +330,11 @@ function deriveTier(meta: AAMeta | null, fallbackSwe: string | null): string {
   const sweNum = parsePercentToNumber(meta?.swe_bench ?? fallbackSwe);
   const bySwe = scoreTierFromSwe(sweNum);
   if (bySwe !== "?") return bySwe;
+
+  const byBenchmark = scoreTierFromIntelligence(
+    meta?.aa_benchmark_score ?? null,
+  );
+  if (byBenchmark !== "?") return byBenchmark;
 
   const byIq = scoreTierFromIntelligence(meta?.aa_intelligence ?? null);
   return byIq;
@@ -636,6 +675,24 @@ function toAAMeta(row: any): AAMeta | null {
   const slug = firstString(row?.aa_slug, row?.slug, row?.model_slug, row?.id);
   const evaluations = row?.evaluations || {};
   const pricing = row?.pricing || {};
+  const codingIndex = parseNumberOrNull(
+    row?.aa_coding_index ??
+      row?.coding_index ??
+      evaluations?.artificial_analysis_coding_index,
+  );
+  const intelligenceIndex = parseNumberOrNull(
+    row?.aa_intelligence ??
+      row?.intelligence_index ??
+      row?.intelligence ??
+      evaluations?.artificial_analysis_intelligence_index,
+  );
+  const benchmarkScore = codingIndex ?? intelligenceIndex;
+  const benchmarkName =
+    codingIndex != null
+      ? "coding_index"
+      : intelligenceIndex != null
+        ? "intelligence_index"
+        : null;
   const sweRawValue =
     row?.swe_bench ??
     row?.sweBench ??
@@ -652,14 +709,13 @@ function toAAMeta(row: any): AAMeta | null {
     (slug ? `https://artificialanalysis.ai/models/${slug}` : "");
 
   const meta: AAMeta = {
+    aa_model_id: firstString(row?.aa_model_id, row?.model_id, row?.id),
     swe_bench: swe,
     aa_slug: slug,
-    aa_intelligence: parseNumberOrNull(
-      row?.aa_intelligence ??
-        row?.intelligence_index ??
-        row?.intelligence ??
-        evaluations?.artificial_analysis_intelligence_index,
-    ),
+    aa_benchmark_score: benchmarkScore,
+    aa_benchmark_name: benchmarkName,
+    aa_coding_index: codingIndex,
+    aa_intelligence: intelligenceIndex,
     aa_speed_tps: parseNumberOrNull(
       row?.aa_speed_tps ??
         row?.speed_tps ??
@@ -684,12 +740,21 @@ function toAAMeta(row: any): AAMeta | null {
       row?.contextWindow,
     ),
     aa_url,
+    aa_updated_at: firstString(
+      row?.aa_updated_at,
+      row?.updated_at,
+      row?.updatedAt,
+      row?.last_updated,
+      row?.lastUpdated,
+    ),
     tier,
   };
 
   if (
+    !meta.aa_model_id &&
     !meta.aa_slug &&
     meta.swe_bench == null &&
+    meta.aa_benchmark_score == null &&
     meta.aa_intelligence == null &&
     meta.aa_speed_tps == null
   ) {
@@ -720,6 +785,18 @@ function indexAAModels(rows: any[]) {
       row?.creator_slug,
       row?.creatorSlug,
     );
+    const creatorId = firstString(
+      row?.model_creator?.id,
+      row?.modelCreator?.id,
+      row?.creator_id,
+      row?.creatorId,
+    );
+    const creatorName = firstString(
+      row?.model_creator?.name,
+      row?.modelCreator?.name,
+      row?.creator_name,
+      row?.creatorName,
+    );
 
     if (modelId) {
       const bare = normalizeModelId(modelId);
@@ -727,26 +804,61 @@ function indexAAModels(rows: any[]) {
       setIfAbsent(toSlugKey(bare), meta);
     }
 
+    if (meta.aa_model_id) setIfAbsent(meta.aa_model_id, meta);
+
     if (meta.aa_slug) {
       setIfAbsent(meta.aa_slug, meta);
       if (creatorSlug) setIfAbsent(`${creatorSlug}/${meta.aa_slug}`, meta);
+      if (creatorId) setIfAbsent(`${creatorId}/${meta.aa_slug}`, meta);
+      if (creatorName) {
+        setIfAbsent(`${creatorName}/${meta.aa_slug}`, meta);
+      }
     }
 
     if (modelName) {
       setIfAbsent(modelName.replace(/\s+/g, "-"), meta);
+      if (creatorSlug) setIfAbsent(`${creatorSlug}/${modelName}`, meta);
+      if (creatorName) setIfAbsent(`${creatorName}/${modelName}`, meta);
     }
   }
 
   return lookup;
 }
 
+function aaMetaIdentity(meta: AAMeta | null): string {
+  return normalizeSearchKey(meta?.aa_model_id || meta?.aa_slug || "");
+}
+
+function summarizeAAMeta(meta: AAMeta): string {
+  const name = meta.aa_slug || meta.aa_model_id || "unknown";
+  const score =
+    meta.aa_benchmark_score == null ? "" : ` score:${meta.aa_benchmark_score}`;
+  return `${name}${score}`;
+}
+
+function trackAAMatch(meta: AAMeta | null, matchedAaIds: Set<string>) {
+  const identity = aaMetaIdentity(meta);
+  if (identity) matchedAaIds.add(identity);
+}
+
+function supportReportBucket(supported: boolean | null) {
+  if (supported === true) return "opencode_supported" as const;
+  if (supported === false) return "opencode_unsupported" as const;
+  return "opencode_unknown" as const;
+}
+
 function findAAMeta(
   modelId: string,
   modelName: string,
   aaLookup: Map<string, AAMeta>,
+  existingEntry: any = null,
 ): AAMeta | null {
   const bare = normalizeModelId(modelId);
+  const aliases = AA_MODEL_ALIASES[normalizeSearchKey(bare)] || [];
   const candidates = [
+    existingEntry?.aa_model_id || "",
+    existingEntry?.aa_slug || "",
+    ...aliases,
     bare,
     toSlugKey(bare),
     modelName.replace(/\s+/g, "-"),
@@ -768,14 +880,19 @@ function mergeAAMeta(target: any, meta: AAMeta | null): boolean {
   let changed = false;
 
   const updates: Record<string, any> = {
+    aa_model_id: meta.aa_model_id,
     swe_bench: meta.swe_bench,
     aa_slug: meta.aa_slug,
+    aa_benchmark_score: meta.aa_benchmark_score,
+    aa_benchmark_name: meta.aa_benchmark_name,
+    aa_coding_index: meta.aa_coding_index,
     aa_intelligence: meta.aa_intelligence,
     aa_speed_tps: meta.aa_speed_tps,
     aa_price_input: meta.aa_price_input,
     aa_price_output: meta.aa_price_output,
     aa_context: meta.aa_context,
     aa_url: meta.aa_url,
+    aa_updated_at: meta.aa_updated_at,
   };
 
   for (const [key, value] of Object.entries(updates)) {
@@ -803,6 +920,14 @@ async function main() {
   const report: Report = {
     generated_at: new Date().toISOString(),
     apply: APPLY,
+    added_models: [],
+    removed_models: [],
+    updated_benchmarks: [],
+    unmatched_provider_models: [],
+    unmatched_artificial_analysis_models: [],
+    opencode_supported: [],
+    opencode_unknown: [],
+    opencode_unsupported: [],
     providers: {
       nim: {
         fetched: false,
@@ -850,22 +975,25 @@ async function main() {
   console.log("Fetching Artificial Analysis model data...");
   const aaKey = loadApiKey("artificialanalysis");
   let aaLookup = new Map<string, AAMeta>();
+  let aaMetas: AAMeta[] = [];
+  const matchedAaIds = new Set<string>();
 
   for (const endpoint of AA_ENDPOINTS) {
     try {
       const data = await fetchJson("artificialanalysis.ai", endpoint, {
-        apiKey: aaKey || undefined,
         headers: aaKey ? { "x-api-key": aaKey } : {},
       });
-      aaLookup = indexAAModels(listFromAnyPayload(data));
+      const rows = listFromAnyPayload(data);
+      aaMetas = rows.map(toAAMeta).filter((m): m is AAMeta => !!m);
+      aaLookup = indexAAModels(rows);
       if (aaLookup.size > 0) {
         report.providers.artificial_analysis = {
           fetched: true,
           endpoint,
-          entries: aaLookup.size,
+          entries: aaMetas.length,
         };
         console.log(
-          `  Found ${aaLookup.size} indexed entries from AA (${endpoint})\n`,
+          `  Found ${aaMetas.length} AA models (${aaLookup.size} indexed keys) from ${endpoint}\n`,
         );
         break;
       }
@@ -994,6 +1122,7 @@ async function main() {
       }))
       .filter((m: CatalogModel) => !isNonChatModel(m.id))
       .sort((a: CatalogModel, b: CatalogModel) => a.id.localeCompare(b.id));
+    nimApiModels = uniqueCatalogModels(nimApiModels);
 
     nimFetchOk = true;
     report.providers.nim.fetched = true;
@@ -1023,6 +1152,7 @@ async function main() {
         context: Number(m.context_length) || 32768,
       }))
       .sort((a: CatalogModel, b: CatalogModel) => a.id.localeCompare(b.id));
+    orApiModels = uniqueCatalogModels(orApiModels);
 
     orFetchOk = true;
     report.providers.openrouter.fetched = true;
@@ -1045,6 +1175,8 @@ async function main() {
 
   report.providers.nim.new_hardcoded = nimNew.length;
   report.providers.nim.removed_hardcoded = nimRemoved.length;
+  report.added_models.push(...nimNew.map((id) => `nim/${id}`));
+  report.removed_models.push(...nimRemoved.map((id) => `nim/${id}`));
 
   console.log("═══ NIM DIFF ═══");
   if (!nimFetchOk) {
@@ -1087,6 +1219,10 @@ async function main() {
 
   report.providers.openrouter.new_rankings = orNew.length;
   report.providers.openrouter.removed_rankings = orRemoved.length;
+  report.added_models.push(...orNew.map((m) => `openrouter/${m.id}`));
+  report.removed_models.push(
+    ...orRemoved.map((id) => `openrouter/${id}`),
+  );
 
   console.log("\n═══ OPENROUTER DIFF ═══");
   if (!orFetchOk) {
@@ -1123,6 +1259,46 @@ async function main() {
     console.log(`\n═══ MISSING RANKINGS (${missingRankings.length}) ═══`);
     console.log("  These models have no entry in model-rankings.json:");
     for (const id of missingRankings.sort()) console.log(`    ? ${id}`);
+  }
+
+  const fetchedProviderModels = [
+    ...(nimFetchOk
+      ? nimApiModels.map((model) => ({
+          provider: "nvidia" as ProviderKey,
+          source: "nim",
+          model,
+        }))
+      : []),
+    ...(orFetchOk
+      ? orApiModels.map((model) => ({
+          provider: "openrouter" as ProviderKey,
+          source: "openrouter",
+          model,
+        }))
+      : []),
+  ];
+
+  for (const { provider, source, model } of fetchedProviderModels) {
+    const existing = rankingsById.get(normalizeModelId(model.id));
+    const aaHit = findAAMeta(model.id, model.name, aaLookup, existing);
+    if (aaHit) {
+      trackAAMatch(aaHit, matchedAaIds);
+    } else if (report.providers.artificial_analysis.fetched) {
+      report.unmatched_provider_models.push(`${source}/${model.id}`);
+    }
+
+    const supportState = isOpenCodeSupported(provider, model.id, support);
+    report[supportReportBucket(supportState)].push(`${source}/${model.id}`);
+  }
+
+  if (report.providers.artificial_analysis.fetched) {
+    report.unmatched_artificial_analysis_models = aaMetas
+      .filter((meta) => {
+        const identity = aaMetaIdentity(meta);
+        return identity && !matchedAaIds.has(identity);
+      })
+      .map(summarizeAAMeta)
+      .sort((a, b) => a.localeCompare(b));
   }
 
   // ── Apply changes ──────────────────────────────────────────────────────────
@@ -1177,8 +1353,30 @@ async function main() {
     if (applyOpenCodeSupportToRankings(rankings, support)) changed = true;
     for (const entry of rankings.models) {
       if (entry.source !== "nim" && entry.source !== "openrouter") continue;
-      const aaHit = findAAMeta(entry.model_id, entry.name || "", aaLookup);
+      const beforeBenchmark =
+        typeof entry.aa_benchmark_score === "number"
+          ? entry.aa_benchmark_score
+          : null;
+      const aaHit = findAAMeta(
+        entry.model_id,
+        entry.name || "",
+        aaLookup,
+        entry,
+      );
+      trackAAMatch(aaHit, matchedAaIds);
       if (mergeAAMeta(entry, aaHit)) changed = true;
+      const afterBenchmark =
+        typeof entry.aa_benchmark_score === "number"
+          ? entry.aa_benchmark_score
+          : null;
+      if (beforeBenchmark !== afterBenchmark) {
+        report.updated_benchmarks.push({
+          model_id: `${entry.source}/${entry.model_id}`,
+          before: beforeBenchmark,
+          after: afterBenchmark,
+          benchmark: entry.aa_benchmark_name ?? null,
+        });
+      }
     }
 
     // Add new NIM entries to rankings.
@@ -1187,6 +1385,7 @@ async function main() {
       if (existing) continue;
 
       const aaHit = findAAMeta(model.id, model.name, aaLookup);
+      trackAAMatch(aaHit, matchedAaIds);
       const tier = deriveTier(aaHit, null);
       if (tier === "?") unresolvedTierModels.push(model.id);
 
@@ -1200,13 +1399,18 @@ async function main() {
         tier,
         context: formatContext(model.context),
         opencode_supported: supportState,
+        aa_model_id: aaHit?.aa_model_id || "",
         aa_slug: aaHit?.aa_slug || "",
+        aa_benchmark_score: aaHit?.aa_benchmark_score ?? null,
+        aa_benchmark_name: aaHit?.aa_benchmark_name ?? null,
+        aa_coding_index: aaHit?.aa_coding_index ?? null,
         aa_intelligence: aaHit?.aa_intelligence ?? null,
         aa_speed_tps: aaHit?.aa_speed_tps ?? null,
         aa_price_input: aaHit?.aa_price_input ?? null,
         aa_price_output: aaHit?.aa_price_output ?? null,
         aa_context: aaHit?.aa_context || "",
         aa_url: aaHit?.aa_url || "",
+        aa_updated_at: aaHit?.aa_updated_at || "",
       };
 
       rankings.models.push(entry);
@@ -1218,6 +1422,14 @@ async function main() {
       );
       changed = true;
       report.providers.nim.added_rankings += 1;
+      if (entry.aa_benchmark_score != null) {
+        report.updated_benchmarks.push({
+          model_id: `nim/${entry.model_id}`,
+          before: null,
+          after: entry.aa_benchmark_score,
+          benchmark: entry.aa_benchmark_name ?? null,
+        });
+      }
     }
 
     // Add new OpenRouter entries with AA + support metadata.
@@ -1227,7 +1439,8 @@ async function main() {
 
       const bare = normalizeModelId(model.id);
       const nimTwin = rankingsById.get(bare);
-      const aaHit = findAAMeta(model.id, model.name, aaLookup);
+      const aaHit = findAAMeta(model.id, model.name, aaLookup, nimTwin);
+      trackAAMatch(aaHit, matchedAaIds);
 
       const tier =
         deriveTier(aaHit, nimTwin?.swe_bench || null) || nimTwin?.tier || "?";
@@ -1243,7 +1456,13 @@ async function main() {
         tier,
         context: formatContext(model.context),
         opencode_supported: supportState,
+        aa_model_id: aaHit?.aa_model_id || nimTwin?.aa_model_id || "",
         aa_slug: aaHit?.aa_slug || nimTwin?.aa_slug || "",
+        aa_benchmark_score:
+          aaHit?.aa_benchmark_score ?? nimTwin?.aa_benchmark_score ?? null,
+        aa_benchmark_name:
+          aaHit?.aa_benchmark_name ?? nimTwin?.aa_benchmark_name ?? null,
+        aa_coding_index: aaHit?.aa_coding_index ?? nimTwin?.aa_coding_index ?? null,
         aa_intelligence:
           aaHit?.aa_intelligence ?? nimTwin?.aa_intelligence ?? null,
         aa_speed_tps: aaHit?.aa_speed_tps ?? nimTwin?.aa_speed_tps ?? null,
@@ -1253,6 +1472,7 @@ async function main() {
           aaHit?.aa_price_output ?? nimTwin?.aa_price_output ?? null,
         aa_context: aaHit?.aa_context || nimTwin?.aa_context || "",
         aa_url: aaHit?.aa_url || nimTwin?.aa_url || "",
+        aa_updated_at: aaHit?.aa_updated_at || nimTwin?.aa_updated_at || "",
       };
 
       rankings.models.push(entry);
@@ -1264,6 +1484,14 @@ async function main() {
       );
       changed = true;
       report.providers.openrouter.added_rankings += 1;
+      if (entry.aa_benchmark_score != null) {
+        report.updated_benchmarks.push({
+          model_id: `openrouter/${entry.model_id}`,
+          before: null,
+          after: entry.aa_benchmark_score,
+          benchmark: entry.aa_benchmark_name ?? null,
+        });
+      }
     }
 
     if (changed) {

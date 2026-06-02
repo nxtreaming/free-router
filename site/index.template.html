@@ -10,7 +10,7 @@
     <link id="favicon-32" rel="icon" type="image/png" sizes="32x32" href="/logo/light/favicon-32x32.png" />
     <link id="favicon-16" rel="icon" type="image/png" sizes="16x16" href="/logo/light/favicon-16x16.png" />
     <link id="apple-touch-icon" rel="apple-touch-icon" sizes="180x180" href="/logo/light/apple-touch-icon.png" />
-    <link id="site-webmanifest" rel="manifest" href="/logo/light/site.webmanifest" />
+    <link id="site-webmanifest" rel="manifest" href="/site.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -46,8 +46,7 @@
             "favicon-ico": "favicon.ico",
             "favicon-32": "favicon-32x32.png",
             "favicon-16": "favicon-16x16.png",
-            "apple-touch-icon": "apple-touch-icon.png",
-            "site-webmanifest": "site.webmanifest"
+            "apple-touch-icon": "apple-touch-icon.png"
           };
           Object.keys(assets).forEach(function (id) {
             var el = document.getElementById(id);
@@ -118,7 +117,7 @@
           <span class="meta-sep" aria-hidden="true">|</span>
           <span class="meta-item">
             <i class="ph ph-scales meta-icon" aria-hidden="true"></i>
-            <span>MIT License</span>
+            <span>Apache 2.0</span>
           </span>
           <span class="meta-sep" aria-hidden="true">|</span>
           <span class="meta-item">
@@ -352,14 +351,15 @@
                   <th class="col-name">Model</th>
                   <th class="col-ctx">Ctx</th>
                   <th class="col-swe">SWE</th>
-                  <th class="col-intel">IQ</th>
+                  <th class="col-bench">Bench</th>
                   <th class="col-speed">TPS</th>
+                  <th class="col-oc">OC</th>
                 </tr>
               </thead>
               <tbody id="model-tbody">
                 __MODEL_ROWS__
                 <tr class="no-results-row" id="no-results-row" hidden>
-                  <td colspan="7" class="no-results">No models found</td>
+                  <td colspan="8" class="no-results">No models found</td>
                 </tr>
               </tbody>
             </table>
@@ -382,7 +382,7 @@
       <div class="site-footer-inner">
         <span class="footer-item">
           <i class="ph ph-scales footer-icon" aria-hidden="true"></i>
-          <span>MIT License</span>
+          <span>Apache 2.0</span>
         </span>
         <span class="footer-sep" aria-hidden="true">·</span>
         <a

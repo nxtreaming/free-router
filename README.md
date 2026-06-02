@@ -1,7 +1,7 @@
 [English](./README.md) | [한국어](./README.ko.md)
 
 ![Version](https://img.shields.io/badge/version-1.2.1-333333?style=flat-square)
-[![License: MIT License](https://img.shields.io/badge/License-MIT%20License-yellow.svg)](./LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
 [![npm downloads](https://img.shields.io/npm/dm/%40bytonylee%2Ffree-router)](https://www.npmjs.com/package/@bytonylee/free-router)
 [![CI](https://github.com/bytonylee/free-router/actions/workflows/ci.yml/badge.svg)](https://github.com/bytonylee/free-router/actions/workflows/ci.yml)
 
@@ -36,8 +36,8 @@ restarts automatically, so you can continue without running `free-router` again.
 
 1. **First-run onboarding wizard**
    Launch `free-router`, open provider websites in-browser from the wizard, paste keys, and start.
-2. **Interactive model search + launch**
-   Use `/` to filter models, then `Enter` to update OpenCode config and open `opencode`.
+2. **Interactive model search + target config**
+   Use `/` to filter models, then `Enter` to configure OpenCode, OpenClaw, or Hermes Agent.
 3. **Quick API key rescue from main screen**
    Press `A` (or `R` for expired/missing provider) to jump into key editing with auto browser opening for missing keys.
 4. **Full settings workflow**
@@ -113,8 +113,8 @@ uses the same foreground color as the table rows.
 
 | Key            | Action                                                     |
 | -------------- | ---------------------------------------------------------- |
-| `Enter`        | Save config + open current model in `opencode`             |
-| `/`            | Search / filter models (Enter in search = open `opencode`) |
+| `Enter`        | Configure current model for OpenCode / OpenClaw / Hermes   |
+| `/`            | Search / filter models (Enter in search = configure target) |
 | `A`            | Quick API key add/change (opens key editor in Settings)    |
 | `R`            | Edit API key for likely expired/missing provider           |
 | `T`            | Cycle tier filter: All → S+ → S → A+ → …                   |
@@ -138,9 +138,13 @@ uses the same foreground color as the table rows.
 | `8` | Verdict            |
 | `9` | AA Intelligence    |
 
-### OpenCode handoff
+### Target handoff
 
-Pressing `Enter` on a model writes the OpenCode config and immediately opens `opencode`.
+Pressing `Enter` on a model opens a target picker:
+
+- **OpenCode** → `~/.config/opencode/opencode.json` with optional Save + Launch.
+- **OpenClaw** → `~/.openclaw/openclaw.json` using `agents.defaults.model.primary` and `agents.defaults.models`.
+- **Hermes Agent** → `~/.hermes/config.yaml` using the documented `model.provider` and `model.default` fields.
 
 If OpenCode fallback remaps the provider (for example NIM Stepfun → OpenRouter)
 and the effective provider key is missing, free-router asks:
@@ -150,12 +154,12 @@ If model metadata says the selected model is unsupported by the known target
 support list, free-router falls back to NVIDIA NIM `deepseek-ai/deepseek-v4-pro`
 as the default high-performance model.
 
-Configs written:
+Existing target configs are backed up before writing.
 
-- **OpenCode CLI** → `~/.config/opencode/opencode.json`
-- **OpenClaw** → `~/.openclaw/openclaw.json`
-
-Existing configs are backed up before writing.
+OpenClaw and Hermes Agent use their built-in `openrouter` / `nvidia` provider
+names. If `FREE_ROUTER_EXPORT_PLAINTEXT_KEYS=1` is set, free-router also writes
+the selected provider key into OpenClaw `env` or Hermes `~/.hermes/.env`;
+otherwise those tools should read provider keys from your shell environment.
 
 When free-router launches OpenCode, it now sets `OPENCODE_CLI_RUN_MODE=true`
 by default (unless you already set it) to reduce startup log noise from
@@ -261,4 +265,4 @@ Stored at `~/.free-router.json` (permissions `0600`).
 
 ## License
 
-MIT License. See [LICENSE](./LICENSE).
+Apache License 2.0. See [LICENSE](./LICENSE).

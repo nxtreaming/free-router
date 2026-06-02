@@ -25,11 +25,17 @@ import {
 import {
   writeOpenCode,
   writeOpenClaw,
+  writeHermesAgent,
   resolveOpenCodeSelection,
   isOpenCodeInstalled,
   detectAvailableInstallers,
   installOpenCode,
 } from "../lib/targets.js";
+import {
+  TargetPickerApp,
+  type TargetPickerResult,
+} from "../tui/target-picker-app.js";
+import { runInkSubApp } from "../tui/ink-harness.js";
 import {
   getAvg,
   getUptime,
@@ -64,6 +70,7 @@ import { fileURLToPath } from "node:url";
 import { basename, dirname } from "node:path";
 import { get as httpsGet } from "node:https";
 import { get as httpGet } from "node:http";
+import { createElement } from "react";
 
 import { createRequire } from "node:module";
 
@@ -133,8 +140,8 @@ if (HELP) {
     ↑↓ / j k     Navigate models
     PgUp / PgDn   Jump one page
     g / G          Jump to top / bottom
-    /              Toggle search (Enter opens opencode, ESC clears)
-    Enter          Save config + open current model in opencode
+    /              Toggle search (Enter configures target, ESC clears)
+    Enter          Configure current model for OpenCode / OpenClaw / Hermes
     A              Quick API key add/change (opens key editor)
     T              Cycle tier filter
     W / X          Faster / slower ping interval
@@ -185,6 +192,36 @@ let starPromptHandledThisLaunch = false;
 let startupSearchRequestedThisLaunch = false;
 let terminalFocused = true;
 let renderDeferredWhileBlurred = false;
+
+type TargetId = "opencode" | "openclaw" | "hermes";
+
+const CONFIG_TARGETS: Array<{
+  id: TargetId;
+  label: string;
+  path: string;
+  enabled: boolean;
+  launchable?: boolean;
+}> = [
+  {
+    id: "opencode",
+    label: "OpenCode",
+    path: "~/.config/opencode/opencode.json",
+    enabled: true,
+    launchable: true,
+  },
+  {
+    id: "openclaw",
+    label: "OpenClaw",
+    path: "~/.openclaw/openclaw.json",
+    enabled: true,
+  },
+  {
+    id: "hermes",
+    label: "Hermes Agent",
+    path: "~/.hermes/config.yaml",
+    enabled: true,
+  },
+];
 
 // ─── Geometry ──────────────────────────────────────────────────────────────────
 const DEFAULT_COLS = 80;
@@ -262,7 +299,7 @@ const SORT_COLS = [
   { key: "6", col: "uptime", label: "Up%" },
   { key: "7", col: "context", label: "Ctx" },
   { key: "8", col: "verdict", label: "Verdict" },
-  { key: "9", col: "intel", label: "AA" },
+  { key: "9", col: "bench", label: "Bench" },
 ];
 
 function sortArrow(colName: string) {
@@ -288,7 +325,7 @@ type TableColumn = {
     | "provider"
     | "model"
     | "context"
-    | "intel"
+    | "bench"
     | "avg"
     | "latest"
     | "uptime"
@@ -305,7 +342,7 @@ const TABLE_COLUMNS: TableColumn[] = [
   { key: "provider", label: "Provider", sortCol: "provider", width: 13 },
   { key: "model", label: "Model", sortCol: "model", width: 34 },
   { key: "context", label: "Ctx", sortCol: "context", width: 7, right: true },
-  { key: "intel", label: "AA", sortCol: "intel", width: 5, right: true },
+  { key: "bench", label: "Bench", sortCol: "bench", width: 6, right: true },
   { key: "avg", label: "Avg", sortCol: "avg", width: 8, right: true },
   { key: "latest", label: "Lat", sortCol: "latest", width: 8, right: true },
   { key: "uptime", label: "Up%", sortCol: "uptime", width: 6, right: true },
@@ -332,6 +369,21 @@ function fmtUp(pct: number, hasPings: boolean) {
 function fmtLatency(ms: number | null) {
   if (ms != null) return latColor(ms) + fmtMs(ms) + R;
   return `${D}${fmtMs(null)}${R}`;
+}
+
+function fmtBenchScore(score: number | null) {
+  if (score == null) return `${GRAY}   -${R}`;
+  return String(Math.round(score)).padStart(4);
+}
+
+function benchLabel(name: string | null) {
+  return name === "coding_index" ? "Code" : "IQ";
+}
+
+function openCodeSupportLabel(model: Model) {
+  if (model.opencodeSupported === true) return "OC:yes";
+  if (model.opencodeSupported === false) return "OC:no";
+  return "OC:?";
 }
 
 function fullWidthBar(content: string, style = INVERT, lastLine = false) {
@@ -568,8 +620,15 @@ function renderSelectedModelLine(): string {
 
   const fullId = `${sel.providerKey}/${sel.id}`;
   const sweStr = sel.sweScore != null ? `  SWE:${sel.sweScore}%` : "";
+  const benchStr =
+    sel.aaBenchmarkScore != null
+      ? `  ${benchLabel(sel.aaBenchmarkName)}:${sel.aaBenchmarkScore}`
+      : "";
   const ctxStr = sel.context ? `  ctx:${fmtCtx(sel.context).trim()}` : "";
-  return fullWidthLine(`${D} Selected model: ${fullId}${sweStr}${ctxStr}${R}`);
+  const ocStr = `  ${openCodeSupportLabel(sel)}`;
+  return fullWidthLine(
+    `${D} Selected model: ${fullId}${sweStr}${benchStr}${ctxStr}${ocStr}${R}`,
+  );
 }
 
 function footerKey(key: string, label: string): string {
@@ -603,7 +662,7 @@ function renderFooterLines(): string[] {
 
   return [
     fullWidthBar(
-      ` ${footerKey("Enter", "open opencode")}  ${footerKey("/", "search models")}  ${footerKey("A", "api key")}  ${footerKey("?", "help")}  ${footerKey("q", "quit")} `,
+      ` ${footerKey("Enter", "configure")}  ${footerKey("/", "search models")}  ${footerKey("A", "api key")}  ${footerKey("?", "help")}  ${footerKey("q", "quit")} `,
       BG_TABLE_HDR,
     ),
     fullWidthLine(
@@ -708,10 +767,7 @@ function renderMain() {
       const upStr = uptimeColor(up) + fmtUp(up, m.pings.length > 0) + R;
       const dot = statusDot(m);
       const verdict = `${dot} ${formatVerdict(getVerdict(m), isSel)}`;
-      const aaStr =
-        m.aaIntelligence != null
-          ? String(Math.round(m.aaIntelligence)).padStart(3)
-          : `${GRAY}  —${R}`;
+      const benchStr = fmtBenchScore(m.aaBenchmarkScore);
 
       out +=
         tableRowLine(
@@ -721,7 +777,7 @@ function renderMain() {
             provider: prov,
             model: name,
             context: ctx,
-            intel: aaStr,
+            bench: benchStr,
             avg: avgStr,
             latest: latStr,
             uptime: upStr,
@@ -757,8 +813,8 @@ function renderHelp() {
       `${WHITE}  g           Jump to top${R}\n` +
       `${WHITE}  G           Jump to bottom${R}\n\n` +
       `${WHITE}${B}  Actions${R}\n` +
-      `${WHITE}  Enter       Save config + open current model in opencode${R}\n` +
-      `${WHITE}  /           Toggle model search (Enter opens opencode)${R}\n` +
+      `${WHITE}  Enter       Configure current model for a target${R}\n` +
+      `${WHITE}  /           Toggle model search (Enter configures target)${R}\n` +
       `${WHITE}  A           Quick API key add/change (opens key editor)${R}\n` +
       `${WHITE}  R           Change API key (auto-detects rejected provider)${R}\n` +
       `${WHITE}  T           Cycle tier filter (All → S+ → …)${R}\n` +
@@ -985,31 +1041,67 @@ function enterTargetPickerFromSelection() {
   selModel = filtered[cursor];
   searchMode = false;
   screen = "ink-subapp";
-  void launchOpenCodeDirect();
+  void launchTargetPicker();
   return true;
 }
 
-async function launchOpenCodeDirect() {
-  prepareForInkSubApp();
+async function launchTargetPicker() {
+  if (!selModel) {
+    return;
+  }
 
+  const result = await runInkSubApp<TargetPickerResult>(
+    (resolve) =>
+      createElement(TargetPickerApp, {
+        modelName: selModel?.displayName || selModel?.id || "selected model",
+        modelFullId: `${selModel?.providerKey}/${selModel?.id}`,
+        targets: CONFIG_TARGETS,
+        onDone: resolve,
+      }),
+    {
+      beforeMount: prepareForInkSubApp,
+      afterUnmount: () => {
+        screen = "ink-subapp";
+      },
+    },
+  );
+
+  if (result.action === "cancelled") {
+    restoreAfterInkSubApp("main");
+    restartLoop();
+    return;
+  }
+
+  await applySelectionToTarget(result.targetId as TargetId, result.launch);
+}
+
+async function applySelectionToTarget(targetId: TargetId, launch: boolean) {
   if (!selModel) {
     restoreAfterInkSubApp("main");
     restartLoop();
     return;
   }
 
-  const { openCodeModel, openCodePk, openCodeApiKey, notice } =
-    resolveOpenCodeApplySelection(selModel);
+  const { targetModel, targetPk, targetApiKey, notice } =
+    resolveTargetApplySelection(selModel, targetId);
 
-  let launch = true;
+  let shouldLaunch = targetId === "opencode" && launch;
+  let writtenPath: string;
 
   try {
-    writeOpenCode(openCodeModel, openCodePk, openCodeApiKey, {
-      persistApiKey: ALLOW_PLAINTEXT_KEY_EXPORT,
-    });
-    writeOpenClaw(openCodeModel, openCodePk, openCodeApiKey, {
-      persistApiKey: ALLOW_PLAINTEXT_KEY_EXPORT,
-    });
+    if (targetId === "opencode") {
+      writtenPath = writeOpenCode(targetModel, targetPk, targetApiKey, {
+        persistApiKey: ALLOW_PLAINTEXT_KEY_EXPORT,
+      });
+    } else if (targetId === "openclaw") {
+      writtenPath = writeOpenClaw(targetModel, targetPk, targetApiKey, {
+        persistApiKey: ALLOW_PLAINTEXT_KEY_EXPORT,
+      });
+    } else {
+      writtenPath = writeHermesAgent(targetModel, targetPk, targetApiKey, {
+        persistApiKey: ALLOW_PLAINTEXT_KEY_EXPORT,
+      });
+    }
   } catch (err: any) {
     w(`${RED} \u2717 Target config write failed: ${err.message}${R}\n`);
     setTimeout(() => {
@@ -1019,29 +1111,33 @@ async function launchOpenCodeDirect() {
     return;
   }
   if (notice) w(`\n${notice}\n`);
+  w(
+    `${GREEN} ✓ Wrote ${targetLabel(targetId)} config: ${writtenPath}${R}\n`,
+  );
 
   // Guard: missing API key → offer to add it
-  if (launch && !openCodeApiKey) {
-    const meta = PROVIDERS_META[openCodePk];
+  if (shouldLaunch && !targetApiKey) {
+    const meta = PROVIDERS_META[targetPk];
     const envVar = meta?.envVar || "API key";
     w(
-      `\n${YELLOW} ! Missing ${meta?.name || openCodePk} API key (${envVar}).${R}\n`,
+      `\n${YELLOW} ! Missing ${meta?.name || targetPk} API key (${envVar}).${R}\n`,
     );
     const addKey = await promptYesNoFromTarget(
       `${D}   Add API key now? (Y/n, default: Y): ${R}`,
       true,
     );
     if (addKey) {
-      openApiKeyEditorFromMain(openCodePk);
+      restoreAfterInkSubApp("main");
+      openApiKeyEditorFromMain(targetPk);
       return;
     }
     w(
       `${YELLOW} Launch cancelled. Set ${envVar} with A, then retry.${R}\n`,
     );
-    launch = false;
+    shouldLaunch = false;
   }
 
-  if (launch) {
+  if (shouldLaunch) {
     if (!isOpenCodeInstalled()) {
       w(
         `${YELLOW} ! opencode is not installed. Install from https://github.com/opencode-ai/opencode${R}\n`,
@@ -1052,7 +1148,7 @@ async function launchOpenCodeDirect() {
       }, 1400);
       return;
     }
-    const launchEnv = buildOpenCodeLaunchEnv(openCodePk, openCodeApiKey);
+    const launchEnv = buildOpenCodeLaunchEnv(targetPk, targetApiKey);
     cleanup();
     const proc = spawnSync("opencode", [], {
       stdio: "inherit",
@@ -1069,9 +1165,16 @@ async function launchOpenCodeDirect() {
   }, 1400);
 }
 
-function resolveOpenCodeApplySelection(selectedModel: Model) {
+function targetLabel(targetId: TargetId) {
+  return CONFIG_TARGETS.find((target) => target.id === targetId)?.label ?? targetId;
+}
+
+function resolveTargetApplySelection(selectedModel: Model, targetId: TargetId) {
   const pk = selectedModel.providerKey;
-  const resolved = resolveOpenCodeSelection(selectedModel, pk, models);
+  const resolved =
+    targetId === "opencode"
+      ? resolveOpenCodeSelection(selectedModel, pk, models)
+      : { model: selectedModel, providerKey: pk, fallback: false };
   const apiKey = getApiKey(config, resolved.providerKey);
   const notice =
     resolved.fallback &&
@@ -1079,9 +1182,9 @@ function resolveOpenCodeApplySelection(selectedModel: Model) {
       ? `${YELLOW} ! OpenCode fallback: ${pk}/${selectedModel.id} → ${resolved.providerKey}/${resolved.model.id}${R}`
       : "";
   return {
-    openCodeModel: resolved.model,
-    openCodePk: resolved.providerKey,
-    openCodeApiKey: apiKey,
+    targetModel: resolved.model,
+    targetPk: resolved.providerKey,
+    targetApiKey: apiKey,
     notice,
   };
 }
